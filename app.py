@@ -1,0 +1,722 @@
+from __future__ import annotations
+
+import ast
+import calendar
+import os
+import operator as op
+import re
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Iterable
+
+import altair as alt
+import pandas as pd
+import streamlit as st
+from openpyxl import load_workbook
+
+from database import (
+    SnapshotMonth,
+    build_update_frame_from_database,
+    build_workbook_data_from_database,
+    create_supabase,
+    is_supabase_configured,
+    list_snapshot_months,
+    snapshot_has_values,
+    upsert_snapshot_values,
+)
+
+DEFAULT_WORKBOOK = Path("/Users/bytedance/Downloads/Personal Assets.xlsx")
+SUMMARY_LABELS = {"总资产", "增长率"}
+SAFE_OPERATORS = {
+    ast.Add: op.add,
+    ast.Sub: op.sub,
+    ast.Mult: op.mul,
+    ast.Div: op.truediv,
+    ast.USub: op.neg,
+    ast.UAdd: op.pos,
+}
+
+
+@dataclass
+class WorkbookData:
+    asset_history: pd.DataFrame
+    latest_snapshot: pd.DataFrame
+    total_trend: pd.DataFrame
+
+
+@dataclass
+class MonthColumn:
+    column_index: int
+    label: str
+    snapshot_date: date
+
+
+def evaluate_formula(expr: str) -> float:
+    node = ast.parse(expr, mode="eval")
+
+    def _eval(current: ast.AST) -> float:
+        if isinstance(current, ast.Expression):
+            return _eval(current.body)
+        if isinstance(current, ast.Constant) and isinstance(current.value, (int, float)):
+            return float(current.value)
+        if isinstance(current, ast.BinOp) and type(current.op) in SAFE_OPERATORS:
+            return SAFE_OPERATORS[type(current.op)](_eval(current.left), _eval(current.right))
+        if isinstance(current, ast.UnaryOp) and type(current.op) in SAFE_OPERATORS:
+            return SAFE_OPERATORS[type(current.op)](_eval(current.operand))
+        raise ValueError(f"不支持的公式: {expr}")
+
+    return float(_eval(node))
+
+
+def get_numeric_value(data_ws, formula_ws, row_idx: int, col_idx: int) -> float | None:
+    data_value = data_ws.cell(row_idx, col_idx).value
+    if isinstance(data_value, (int, float)):
+        return float(data_value)
+
+    formula_value = formula_ws.cell(row_idx, col_idx).value
+    if isinstance(formula_value, str) and formula_value.startswith("="):
+        expr = formula_value[1:].strip()
+        if re.fullmatch(r"[0-9+\-*/(). ]+", expr):
+            return evaluate_formula(expr)
+    return None
+
+
+def last_day_of_month(year: int, month: int) -> int:
+    return calendar.monthrange(year, month)[1]
+
+
+def get_month_columns(ws) -> list[MonthColumn]:
+    columns: list[MonthColumn] = []
+    current_year: int | None = None
+    for col in range(3, ws.max_column + 1):
+        current_year, parsed_date = parse_header_date(ws.cell(1, col).value, ws.cell(2, col).value, current_year)
+        if parsed_date:
+            columns.append(
+                MonthColumn(
+                    column_index=col,
+                    label=parsed_date.strftime("%Y-%m-%d"),
+                    snapshot_date=parsed_date,
+                )
+            )
+    return columns
+
+
+def get_asset_rows(ws) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    current_category: str | None = None
+    for row_idx in range(3, ws.max_row + 1):
+        category_cell = ws.cell(row_idx, 1).value
+        account = ws.cell(row_idx, 2).value
+        if category_cell in SUMMARY_LABELS:
+            break
+        if category_cell:
+            current_category = str(category_cell).strip()
+        if current_category and account:
+            rows.append(
+                {
+                    "row_index": row_idx,
+                    "category": current_category,
+                    "account": str(account).strip(),
+                }
+            )
+    return rows
+
+
+def build_update_frame(path: Path, target_column: int) -> pd.DataFrame:
+    wb_data = load_workbook(path, data_only=True)
+    wb_formula = load_workbook(path, data_only=False)
+    ws = wb_data["资产管理"]
+    formula_ws = wb_formula["资产管理"]
+
+    month_columns = get_month_columns(ws)
+    prev_column = None
+    for month_col in month_columns:
+        if month_col.column_index < target_column:
+            prev_column = month_col.column_index
+        if month_col.column_index == target_column:
+            break
+
+    rows: list[dict[str, object]] = []
+    for item in get_asset_rows(ws):
+        previous_value = get_numeric_value(ws, formula_ws, item["row_index"], prev_column) if prev_column else None
+        current_value = get_numeric_value(ws, formula_ws, item["row_index"], target_column)
+        rows.append(
+            {
+                "row_index": item["row_index"],
+                "分类": item["category"],
+                "账户": item["account"],
+                "上月金额": previous_value,
+                "本月金额": current_value,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def month_has_values(path: Path, target_column: int) -> bool:
+    wb_data = load_workbook(path, data_only=True)
+    wb_formula = load_workbook(path, data_only=False)
+    ws = wb_data["资产管理"]
+    formula_ws = wb_formula["资产管理"]
+    for item in get_asset_rows(ws):
+        if get_numeric_value(ws, formula_ws, item["row_index"], target_column) is not None:
+            return True
+    return False
+
+
+def create_month_column(path: Path, target_date: date) -> str:
+    wb = load_workbook(path)
+    ws = wb["资产管理"]
+    month_columns = get_month_columns(ws)
+    for item in month_columns:
+        if item.snapshot_date == target_date:
+            return item.label
+
+    new_col = ws.max_column + 1
+    previous_year = month_columns[-1].snapshot_date.year if month_columns else None
+    ws.cell(1, new_col).value = f"{target_date.year}年" if previous_year != target_date.year else None
+    ws.cell(2, new_col).value = f"金额（{target_date.month}.{target_date.day}）"
+
+    for item in get_asset_rows(ws):
+        ws.cell(item["row_index"], new_col).value = None
+
+    total_row = None
+    growth_row = None
+    for row_idx in range(3, ws.max_row + 1):
+        label = ws.cell(row_idx, 1).value
+        if label == "总资产":
+            total_row = row_idx
+        if label == "增长率":
+            growth_row = row_idx
+    if total_row:
+        start_col_letter = ws.cell(1, 3).column_letter
+        end_col_letter = ws.cell(1, new_col).column_letter
+        new_col_letter = ws.cell(1, new_col).column_letter
+        prev_col_letter = ws.cell(1, new_col - 1).column_letter
+        ws.cell(total_row, new_col).value = f"=SUM({new_col_letter}3:{new_col_letter}{total_row - 1})"
+        if growth_row:
+            ws.cell(growth_row, new_col).value = f"=({new_col_letter}{total_row}-{prev_col_letter}{total_row})/{prev_col_letter}{total_row}"
+
+    wb.save(path)
+    return target_date.strftime("%Y-%m-%d")
+
+
+def save_month_values(path: Path, target_column: int, values: pd.DataFrame) -> None:
+    wb = load_workbook(path)
+    ws = wb["资产管理"]
+    for _, row in values.iterrows():
+        row_index = int(row["row_index"])
+        amount = row["本月金额"]
+        ws.cell(row_index, target_column).value = None if pd.isna(amount) else float(amount)
+    wb.save(path)
+
+
+def add_one_month(source: date) -> date:
+    year = source.year + 1 if source.month == 12 else source.year
+    month = 1 if source.month == 12 else source.month + 1
+    return date(year, month, last_day_of_month(year, month))
+
+
+def parse_year(value: object, current_year: int | None) -> int | None:
+    if value is None:
+        return current_year
+    if isinstance(value, int):
+        return value
+    match = re.search(r"(\d{4})", str(value))
+    return int(match.group(1)) if match else current_year
+
+
+def parse_header_date(year_value: object, amount_label: object, current_year: int | None) -> tuple[int | None, date | None]:
+    year = parse_year(year_value, current_year)
+    if year is None or amount_label is None:
+        return year, None
+    match = re.search(r"(\d{1,2})\.(\d{1,2})", str(amount_label))
+    if not match:
+        return year, None
+    month, day = map(int, match.groups())
+    return year, date(year, month, day)
+
+
+def parse_assets_sheet(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    wb_data = load_workbook(path, data_only=True)
+    wb_formula = load_workbook(path, data_only=False)
+    ws = wb_data["资产管理"]
+    formula_ws = wb_formula["资产管理"]
+
+    column_dates: dict[int, date] = {}
+    current_year: int | None = None
+    for col in range(3, ws.max_column + 1):
+        current_year, parsed_date = parse_header_date(ws.cell(1, col).value, ws.cell(2, col).value, current_year)
+        if parsed_date:
+            column_dates[col] = parsed_date
+
+    rows: list[dict[str, object]] = []
+    current_category: str | None = None
+    for row_idx in range(3, ws.max_row + 1):
+        category_cell = ws.cell(row_idx, 1).value
+        account = ws.cell(row_idx, 2).value
+
+        if category_cell in SUMMARY_LABELS:
+            break
+        if category_cell:
+            current_category = str(category_cell).strip()
+        if not current_category or not account:
+            continue
+
+        for col, snapshot_date in column_dates.items():
+            amount = get_numeric_value(ws, formula_ws, row_idx, col)
+            if amount is not None:
+                rows.append(
+                    {
+                        "category": current_category,
+                        "account": str(account).strip(),
+                        "date": pd.Timestamp(snapshot_date),
+                        "amount": amount,
+                    }
+                )
+
+    asset_history = pd.DataFrame(rows).sort_values(["date", "category", "account"]).reset_index(drop=True)
+    if asset_history.empty:
+        raise ValueError("资产管理 工作表中没有可用的数值数据。")
+
+    latest_snapshot = (
+        asset_history.sort_values("date")
+        .groupby(["category", "account"], as_index=False)
+        .tail(1)
+        .sort_values(["category", "amount"], ascending=[True, False])
+        .reset_index(drop=True)
+    )
+    return asset_history, latest_snapshot
+
+
+def build_total_trend(asset_history: pd.DataFrame) -> pd.DataFrame:
+    trend = (
+        asset_history.groupby("date", as_index=False)["amount"]
+        .sum()
+        .rename(columns={"amount": "total_assets"})
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+    if trend.empty:
+        raise ValueError("资产管理 工作表中没有可用的趋势数据。")
+    return trend
+
+
+@st.cache_data(show_spinner=False)
+def load_data(path_str: str) -> WorkbookData:
+    if is_supabase_configured():
+        client = create_supabase()
+        asset_history, latest_snapshot, total_trend = build_workbook_data_from_database(client)
+        return WorkbookData(
+            asset_history=asset_history,
+            latest_snapshot=latest_snapshot,
+            total_trend=total_trend,
+        )
+
+    path = Path(path_str).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"找不到文件: {path}")
+
+    asset_history, latest_snapshot = parse_assets_sheet(path)
+    total_trend = build_total_trend(asset_history)
+    return WorkbookData(
+        asset_history=asset_history,
+        latest_snapshot=latest_snapshot,
+        total_trend=total_trend,
+    )
+
+
+def format_money(value: float) -> str:
+    return f"¥{value:,.0f}"
+
+
+def format_money_compact(value: float) -> str:
+    if abs(value) >= 10000:
+        return f"¥{value / 10000:.1f}万"
+    return format_money(value)
+
+
+def safe_pct_change(values: Iterable[float]) -> float | None:
+    values = list(values)
+    if len(values) < 2 or values[-2] == 0:
+        return None
+    return (values[-1] - values[-2]) / values[-2]
+
+
+def inject_responsive_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            padding-top: 1.5rem;
+            padding-bottom: 2rem;
+        }
+
+        @media (max-width: 768px) {
+            .block-container {
+                padding-top: 0.75rem;
+                padding-left: 0.8rem;
+                padding-right: 0.8rem;
+                padding-bottom: 1rem;
+            }
+
+            h1 {
+                font-size: 2rem !important;
+                line-height: 1.2 !important;
+            }
+
+            h3 {
+                font-size: 1.15rem !important;
+            }
+
+            div[data-testid="stMetric"] {
+                padding: 0.35rem 0;
+            }
+
+            div[data-testid="stMetricLabel"] p {
+                font-size: 0.88rem !important;
+            }
+
+            div[data-testid="stMetricValue"] {
+                font-size: 1.7rem !important;
+            }
+
+            div[data-testid="stMetricDelta"] {
+                font-size: 0.9rem !important;
+            }
+
+            div[data-testid="stHorizontalBlock"] {
+                gap: 0.75rem !important;
+                flex-wrap: wrap !important;
+            }
+
+            div[data-testid="column"] {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+            }
+
+            div[data-testid="stDataFrame"] {
+                font-size: 0.88rem !important;
+            }
+
+            div[data-baseweb="select"] > div {
+                min-height: 44px;
+            }
+
+            button[kind],
+            div[data-testid="stButton"] button {
+                min-height: 44px;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def main() -> None:
+    st.set_page_config(page_title="个人资产看板", page_icon="💹", layout="wide")
+    inject_responsive_styles()
+    st.title("个人资产看板")
+    backend_mode = "数据库" if is_supabase_configured() else "Excel"
+    st.caption(f"当前数据源：{backend_mode}。自动汇总总资产趋势、分类占比和账户快照。")
+
+    with st.sidebar:
+        st.header("数据源")
+        if is_supabase_configured():
+            workbook_path = str(DEFAULT_WORKBOOK)
+            refresh_now = st.button("刷新云端数据", use_container_width=True)
+            st.caption("当前已接入 Supabase。页面读写都会直接访问云端数据库。")
+        else:
+            workbook_path = st.text_input("Excel 路径", value=str(DEFAULT_WORKBOOK))
+            refresh_now = st.button("重新读取 Excel", use_container_width=True)
+            st.caption("点一次“重新读取 Excel”就会重新加载第一张工作表。")
+
+    if refresh_now:
+        load_data.clear()
+
+    data = load_data(workbook_path)
+    use_database = is_supabase_configured()
+    if use_database:
+        month_columns = list_snapshot_months(create_supabase())
+    else:
+        workbook_file = Path(workbook_path).expanduser()
+        wb_headers = load_workbook(workbook_file, data_only=True)
+        month_columns = get_month_columns(wb_headers["资产管理"])
+    latest_data_date = data.total_trend["date"].iloc[-1].date()
+    default_update_date = add_one_month(latest_data_date)
+    if use_database:
+        display_months = month_columns.copy()
+        if not any(item.snapshot_date == default_update_date for item in display_months):
+            display_months.append(
+                SnapshotMonth(
+                    label=default_update_date.strftime("%Y-%m-%d"),
+                    snapshot_date=default_update_date,
+                    has_values=False,
+                )
+            )
+        display_months = sorted(display_months, key=lambda item: item.snapshot_date)
+    else:
+        display_months = month_columns
+    default_update_label = next(
+        (item.label for item in display_months if item.snapshot_date == default_update_date),
+        display_months[-1].label,
+    )
+    latest_total = float(data.total_trend["total_assets"].iloc[-1])
+    previous_total = float(data.total_trend["total_assets"].iloc[-2]) if len(data.total_trend) > 1 else latest_total
+    delta_amount = latest_total - previous_total
+    delta_pct = safe_pct_change(data.total_trend["total_assets"].tolist())
+    latest_date = data.total_trend["date"].iloc[-1].strftime("%Y-%m-%d")
+
+    category_summary = (
+        data.latest_snapshot.groupby("category", as_index=False)["amount"].sum().sort_values("amount", ascending=False)
+    )
+    largest_account = data.latest_snapshot.sort_values("amount", ascending=False).iloc[0]
+
+    kpi_1, kpi_2, kpi_3, kpi_4 = st.columns(4)
+    kpi_1.metric("最新总资产", format_money(latest_total), format_money(delta_amount))
+    kpi_2.metric("环比变化", f"{delta_pct:.2%}" if delta_pct is not None else "-", f"截至 {latest_date}")
+    kpi_3.metric("跟踪账户数", f"{data.latest_snapshot['account'].nunique()}")
+    kpi_4.metric("最大单项资产", largest_account["account"], format_money(float(largest_account["amount"])))
+
+    chart_left, chart_right = st.columns([1.4, 1])
+
+    with chart_left:
+        st.subheader("资产趋势")
+        filter_left, filter_right = st.columns([1, 1.2])
+        with filter_left:
+            dimension = st.segmented_control(
+                "筛选维度",
+                options=["总资产", "分类", "账户"],
+                default="总资产",
+                selection_mode="single",
+            )
+        with filter_right:
+            if dimension == "总资产":
+                selected_value = None
+                st.caption("当前展示全部资产的总额变化")
+            else:
+                dimension_field = "category" if dimension == "分类" else "account"
+                available_values = sorted(data.asset_history[dimension_field].unique().tolist())
+                selected_value = st.selectbox(f"选择{dimension}", options=available_values)
+
+        if dimension == "总资产":
+            trend_view = data.total_trend.copy()
+            trend_view["metric"] = "总资产"
+            trend_view["amount"] = trend_view["total_assets"]
+        else:
+            filtered_history = data.asset_history[data.asset_history[dimension_field] == selected_value].copy()
+            trend_view = (
+                filtered_history.groupby("date", as_index=False)["amount"].sum().sort_values("date").reset_index(drop=True)
+            )
+            trend_view["metric"] = selected_value
+
+        trend_view["label"] = trend_view["amount"].map(format_money_compact)
+        label_indices = {
+            trend_view["date"].idxmax(),
+            trend_view["amount"].idxmax(),
+            trend_view["amount"].idxmin(),
+        }
+        label_view = trend_view.loc[sorted(label_indices)].copy()
+        title_name = "总资产" if dimension == "总资产" else selected_value
+        trend_base = alt.Chart(trend_view).encode(
+            x=alt.X("date:T", title=None, axis=alt.Axis(format="%Y-%m")),
+            y=alt.Y("amount:Q", title=None),
+            tooltip=[
+                alt.Tooltip("date:T", title="日期", format="%Y-%m-%d"),
+                alt.Tooltip("metric:N", title="对象"),
+                alt.Tooltip("amount:Q", title="金额", format=",.2f"),
+                alt.Tooltip("label:N", title="简写"),
+            ],
+        )
+        trend_chart = (
+            trend_base.mark_line(point=alt.OverlayMarkDef(size=70), strokeWidth=3)
+            + alt.Chart(label_view).mark_text(dy=-14, fontSize=11, color="#1f2937").encode(
+                x="date:T",
+                y="amount:Q",
+                text="label:N",
+            )
+        ).properties(height=320)
+        st.caption(f"当前展示：{title_name}")
+        st.altair_chart(trend_chart, use_container_width=True)
+
+    with chart_right:
+        st.subheader("最新资产分类占比")
+        category_chart = (
+            alt.Chart(category_summary)
+            .mark_bar()
+            .encode(
+                x=alt.X("category:N", title=None, axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("amount:Q", title=None),
+                tooltip=[
+                    alt.Tooltip("category:N", title="分类"),
+                    alt.Tooltip("amount:Q", title="金额", format=",.2f"),
+                ],
+            )
+            .properties(height=320)
+        )
+        st.altair_chart(category_chart, use_container_width=True)
+
+    summary_left, summary_right = st.columns([1.4, 1])
+
+    with summary_left:
+        st.caption("趋势摘要")
+        st.dataframe(
+            trend_view.assign(
+                date=lambda df: df["date"].dt.strftime("%Y-%m-%d"),
+                amount=lambda df: df["amount"].map(format_money),
+            )[["date", "amount"]].tail(8),
+            use_container_width=True,
+            hide_index=True,
+            height=320,
+        )
+
+    with summary_right:
+        st.caption("分类摘要")
+        st.dataframe(
+            category_summary.assign(amount=lambda df: df["amount"].map(format_money)),
+            use_container_width=True,
+            hide_index=True,
+            height=320,
+        )
+
+    with st.expander("月度更新入口", expanded=True):
+        update_left, update_right = st.columns([1.1, 1.4])
+
+        with update_left:
+            st.markdown("**1. 选择更新方式**")
+            update_mode = st.segmented_control(
+                "更新方式",
+                options=["新增月份录入", "编辑已有月份"],
+                default="新增月份录入",
+                selection_mode="single",
+            )
+
+            if update_mode == "新增月份录入":
+                if use_database:
+                    st.caption("用于录入新的月份数据。数据库模式下不需要先建列，直接选月份保存即可。")
+                else:
+                    st.caption("用于录入下一个月份的数据。若该月份列不存在，可先创建。")
+                selected_label = st.selectbox(
+                    "录入月份",
+                    options=[item.label for item in display_months],
+                    index=[item.label for item in display_months].index(default_update_label),
+                    key="create_month_label",
+                )
+
+                new_month_date = st.date_input("新建月份列", value=default_update_date, format="YYYY-MM-DD")
+
+                if not use_database and st.button("创建这个月份列", use_container_width=True):
+                    created_label = create_month_column(workbook_file, new_month_date)
+                    load_data.clear()
+                    st.success(f"已创建月份列：{created_label}")
+                    st.rerun()
+                if use_database:
+                    st.info("数据库模式下，不需要创建列。直接选择日期并保存即可。")
+            else:
+                filled_months = [
+                    item
+                    for item in display_months
+                    if (
+                        snapshot_has_values(create_supabase(), item.snapshot_date)
+                        if use_database
+                        else month_has_values(workbook_file, item.column_index)
+                    )
+                ]
+                edit_default_label = next(
+                    (item.label for item in filled_months if item.snapshot_date == latest_data_date),
+                    filled_months[-1].label,
+                )
+                st.caption("用于二次修正已经录入过的月份，保存后会覆盖该月原值。")
+                selected_label = st.selectbox(
+                    "编辑月份",
+                    options=[item.label for item in filled_months],
+                    index=[item.label for item in filled_months].index(edit_default_label),
+                    key="edit_month_label",
+                )
+
+        with update_right:
+            selected_month = next(item for item in display_months if item.label == selected_label)
+            if use_database:
+                target_column = None
+                has_existing_values = snapshot_has_values(create_supabase(), selected_month.snapshot_date)
+            else:
+                target_column = next(item.column_index for item in month_columns if item.label == selected_label)
+                has_existing_values = month_has_values(workbook_file, target_column)
+            if update_mode == "编辑已有月份":
+                st.markdown("**2. 编辑已有月份并覆盖保存**")
+                st.warning(f"{selected_label} 已有数据，下面可以直接修改并覆盖保存。")
+            elif has_existing_values:
+                st.markdown("**2. 当前月份已有内容，可继续补充或修正**")
+                st.info(f"{selected_label} 已存在部分数据，再次保存会覆盖你在下表改动的项目。")
+            else:
+                st.markdown("**2. 在下表填写本月金额并保存**")
+
+            if use_database:
+                update_frame = build_update_frame_from_database(create_supabase(), selected_month.snapshot_date)
+                editor_df = update_frame[["asset_id", "分类", "账户", "上月金额", "本月金额"]].copy()
+            else:
+                update_frame = build_update_frame(workbook_file, target_column)
+                editor_df = update_frame[["row_index", "分类", "账户", "上月金额", "本月金额"]].copy()
+            edited_df = st.data_editor(
+                editor_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "row_index": st.column_config.NumberColumn("row_index", disabled=True),
+                    "asset_id": st.column_config.NumberColumn("asset_id", disabled=True),
+                    "分类": st.column_config.TextColumn("分类", disabled=True),
+                    "账户": st.column_config.TextColumn("账户", disabled=True),
+                    "上月金额": st.column_config.NumberColumn("上月金额", format="%.2f", disabled=True),
+                    "本月金额": st.column_config.NumberColumn("本月金额", format="%.2f"),
+                },
+                disabled=["row_index", "asset_id", "分类", "账户", "上月金额"],
+                key=f"monthly_editor_{selected_label}",
+            )
+
+            if has_existing_values:
+                save_label = "覆盖保存这个月份"
+            else:
+                save_label = "保存到数据库" if use_database else "保存本月数据到 Excel"
+            if st.button(save_label, type="primary", use_container_width=True):
+                if use_database:
+                    upsert_snapshot_values(create_supabase(), edited_df, selected_month.snapshot_date)
+                else:
+                    save_month_values(workbook_file, target_column, edited_df)
+                load_data.clear()
+                if has_existing_values:
+                    target_name = "数据库" if use_database else "Excel"
+                    st.success(f"{selected_label} 已重新保存，修改已覆盖到{target_name}。")
+                else:
+                    target_name = "数据库" if use_database else "Excel"
+                    st.success(f"{selected_label} 已保存到{target_name}。")
+                st.rerun()
+
+    st.subheader("账户最新快照")
+    snapshot = data.latest_snapshot.copy()
+    snapshot["date"] = snapshot["date"].dt.strftime("%Y-%m-%d")
+    snapshot["amount"] = snapshot["amount"].map(format_money)
+    st.dataframe(snapshot, use_container_width=True, hide_index=True)
+
+    category_filter = st.multiselect(
+        "筛选资产类别",
+        options=sorted(data.asset_history["category"].unique().tolist()),
+        default=sorted(data.asset_history["category"].unique().tolist()),
+    )
+    filtered_history = data.asset_history[data.asset_history["category"].isin(category_filter)]
+    detail_history = (
+        filtered_history.pivot_table(index="date", columns="account", values="amount", aggfunc="last")
+        .sort_index()
+        .reset_index()
+    )
+    if not detail_history.empty:
+        st.subheader("账户历史明细")
+        st.dataframe(
+            detail_history.assign(date=lambda df: df["date"].dt.strftime("%Y-%m-%d")),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+if __name__ == "__main__":
+    main()

@@ -407,14 +407,6 @@ def inject_responsive_styles() -> None:
             white-space: nowrap;
         }
 
-        .asset-mobile-only {
-            display: none;
-        }
-
-        .asset-desktop-only {
-            display: block;
-        }
-
         .asset-kpi-label {
             font-size: 0.86rem;
             color: #667085;
@@ -444,16 +436,17 @@ def inject_responsive_styles() -> None:
 
         @media (max-width: 768px) {
             .block-container {
-                padding-top: 0.55rem;
+                padding-top: 3rem;
                 padding-left: 0.7rem;
                 padding-right: 0.7rem;
-                padding-bottom: 0.8rem;
+                padding-bottom: 1rem;
                 max-width: 100%;
             }
 
             h1 {
                 font-size: 1.45rem !important;
                 line-height: 1.2 !important;
+                margin-top: 0.35rem !important;
                 margin-bottom: 0.35rem !important;
             }
 
@@ -518,14 +511,6 @@ def inject_responsive_styles() -> None:
                 font-size: 0.82rem;
             }
 
-            .asset-mobile-only {
-                display: block;
-            }
-
-            .asset-desktop-only {
-                display: none;
-            }
-
             div[data-testid="stDataFrame"] {
                 font-size: 0.82rem !important;
             }
@@ -583,6 +568,10 @@ def inject_responsive_styles() -> None:
 
             iframe {
                 border-radius: 14px !important;
+            }
+
+            div[data-testid="stExpander"] {
+                margin-top: 1rem !important;
             }
         }
         </style>
@@ -783,26 +772,7 @@ def main() -> None:
             )
             .properties(height=320)
         )
-        st.markdown('<div class="asset-desktop-only">', unsafe_allow_html=True)
         st.altair_chart(category_chart, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        mobile_category_chart = (
-            alt.Chart(category_summary_view)
-            .mark_bar(cornerRadiusEnd=6)
-            .encode(
-                y=alt.Y("category:N", title=None, sort="-x"),
-                x=alt.X("amount:Q", title=None),
-                tooltip=[
-                    alt.Tooltip("category:N", title="分类"),
-                    alt.Tooltip("amount:Q", title="金额", format=",.2f"),
-                ],
-            )
-            .properties(height=260)
-        )
-        st.markdown('<div class="asset-mobile-only">', unsafe_allow_html=True)
-        st.altair_chart(mobile_category_chart, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
 
     summary_left, summary_right = st.columns([1.4, 1])
 

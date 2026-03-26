@@ -42,6 +42,17 @@ def create_supabase() -> Client:
     return create_client(url, key)
 
 
+def has_app_password() -> bool:
+    return bool(read_secret("APP_PASSWORD"))
+
+
+def validate_app_password(password: str) -> bool:
+    expected = read_secret("APP_PASSWORD")
+    if not expected:
+        return True
+    return password == expected
+
+
 def fetch_assets_df(client: Client) -> pd.DataFrame:
     response = client.table("assets").select("*").order("sort_order").order("id").execute()
     return pd.DataFrame(response.data or [])
@@ -158,3 +169,31 @@ def upsert_snapshot_values(client: Client, values: pd.DataFrame, snapshot_date: 
         return
 
     client.table("asset_values").upsert(records, on_conflict="asset_id,snapshot_date").execute()
+
+
+def insert_audit_log(client: Client, action: str, snapshot_date: date | None, details: dict[str, Any]) -> None:
+    try:
+        client.table("audit_logs").insert(
+            {
+                "action": action,
+                "snapshot_date": snapshot_date.isoformat() if snapshot_date else None,
+                "details": details,
+            }
+        ).execute()
+    except Exception:
+        # 审计失败不阻断主流程，避免影响正常录入。
+        pass
+
+
+def fetch_recent_audit_logs(client: Client, limit: int = 20) -> pd.DataFrame:
+    try:
+        response = (
+            client.table("audit_logs")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return pd.DataFrame(response.data or [])
+    except Exception:
+        return pd.DataFrame()

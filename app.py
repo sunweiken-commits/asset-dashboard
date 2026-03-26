@@ -7,6 +7,7 @@ import operator as op
 import re
 from dataclasses import dataclass
 from datetime import date
+import json
 from pathlib import Path
 from typing import Iterable
 
@@ -20,10 +21,14 @@ from database import (
     build_update_frame_from_database,
     build_workbook_data_from_database,
     create_supabase,
+    fetch_recent_audit_logs,
+    has_app_password,
+    insert_audit_log,
     is_supabase_configured,
     list_snapshot_months,
     snapshot_has_values,
     upsert_snapshot_values,
+    validate_app_password,
 )
 
 DEFAULT_WORKBOOK = Path("/Users/bytedance/Downloads/Personal Assets.xlsx")
@@ -615,15 +620,92 @@ def render_summary_list(rows: list[tuple[str, str]]) -> None:
     st.markdown("".join(chunks), unsafe_allow_html=True)
 
 
+def require_login() -> None:
+    if not has_app_password():
+        return
+    if st.session_state.get("asset_app_authenticated"):
+        return
+
+    st.title("资产看板登录")
+    st.caption("这是一个受保护的资产应用，请输入访问密码。")
+    password = st.text_input("访问密码", type="password")
+    if st.button("进入应用", type="primary", use_container_width=True):
+        if validate_app_password(password):
+            st.session_state["asset_app_authenticated"] = True
+            st.rerun()
+        st.error("密码不正确，请重试。")
+    st.stop()
+
+
+def render_logout_button() -> None:
+    if has_app_password() and st.session_state.get("asset_app_authenticated"):
+        if st.button("退出登录", use_container_width=True):
+            st.session_state.pop("asset_app_authenticated", None)
+            st.rerun()
+
+
+def build_monthly_analysis(total_trend: pd.DataFrame, asset_history: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    monthly = total_trend.copy()
+    monthly["delta_amount"] = monthly["total_assets"].diff()
+    monthly["delta_pct"] = monthly["total_assets"].pct_change()
+
+    if len(total_trend) < 2:
+        return monthly, pd.DataFrame(columns=["category", "delta_amount"])
+
+    latest_date = total_trend["date"].iloc[-1]
+    previous_date = total_trend["date"].iloc[-2]
+    latest_category = (
+        asset_history[asset_history["date"] == latest_date]
+        .groupby("category", as_index=False)["amount"]
+        .sum()
+        .rename(columns={"amount": "latest_amount"})
+    )
+    previous_category = (
+        asset_history[asset_history["date"] == previous_date]
+        .groupby("category", as_index=False)["amount"]
+        .sum()
+        .rename(columns={"amount": "previous_amount"})
+    )
+    contribution = latest_category.merge(previous_category, on="category", how="outer").fillna(0)
+    contribution["delta_amount"] = contribution["latest_amount"] - contribution["previous_amount"]
+    contribution = contribution.sort_values("delta_amount", ascending=False).reset_index(drop=True)
+    return monthly, contribution
+
+
+def build_anomaly_messages(update_frame: pd.DataFrame, monthly_analysis: pd.DataFrame) -> list[str]:
+    messages: list[str] = []
+    if not update_frame.empty:
+        missing_count = int(update_frame["本月金额"].isna().sum())
+        if missing_count:
+            messages.append(f"当前月份还有 {missing_count} 个账户未填写金额。")
+        zero_count = int((update_frame["本月金额"].fillna(0) == 0).sum())
+        if zero_count:
+            messages.append(f"当前月份有 {zero_count} 个账户金额为 0，请确认是否为真实值。")
+
+    if len(monthly_analysis) >= 2:
+        latest = monthly_analysis.iloc[-1]
+        if pd.notna(latest["delta_pct"]) and abs(float(latest["delta_pct"])) >= 0.15:
+            messages.append(
+                f"最近一个月总资产变动 {float(latest['delta_pct']):.2%}，波动较大，建议核对录入和估值。"
+            )
+    return messages
+
+
+def dataframe_to_csv_download(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+
 def main() -> None:
     st.set_page_config(page_title="个人资产看板", page_icon="💹", layout="wide")
     inject_responsive_styles()
+    require_login()
     st.title("个人资产看板")
     backend_mode = "数据库" if is_supabase_configured() else "Excel"
     st.caption(f"当前数据源：{backend_mode}。自动汇总总资产趋势、分类占比和账户快照。")
 
     with st.sidebar:
         st.header("数据源")
+        render_logout_button()
         if is_supabase_configured():
             workbook_path = str(DEFAULT_WORKBOOK)
             refresh_now = st.button("刷新云端数据", use_container_width=True)
@@ -668,6 +750,7 @@ def main() -> None:
     delta_amount = latest_total - previous_total
     delta_pct = safe_pct_change(data.total_trend["total_assets"].tolist())
     latest_date = data.total_trend["date"].iloc[-1].strftime("%Y-%m-%d")
+    monthly_analysis, contribution = build_monthly_analysis(data.total_trend, data.asset_history)
 
     category_summary = (
         data.latest_snapshot.groupby("category", as_index=False)["amount"].sum().sort_values("amount", ascending=False)
@@ -698,6 +781,26 @@ def main() -> None:
             },
         ]
     )
+
+    export_left, export_right = st.columns([1.2, 1])
+    with export_left:
+        st.download_button(
+            "导出总资产趋势 CSV",
+            data=dataframe_to_csv_download(data.total_trend.assign(date=lambda df: df["date"].dt.strftime("%Y-%m-%d"))),
+            file_name="asset_total_trend.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with export_right:
+        st.download_button(
+            "导出最新账户快照 CSV",
+            data=dataframe_to_csv_download(
+                data.latest_snapshot.assign(date=lambda df: df["date"].dt.strftime("%Y-%m-%d"))
+            ),
+            file_name="asset_latest_snapshot.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
     chart_left, chart_right = st.columns([1.4, 1])
 
@@ -796,6 +899,32 @@ def main() -> None:
         ]
         render_summary_list(category_summary_rows)
 
+    analysis_left, analysis_right = st.columns([1.1, 1])
+    with analysis_left:
+        st.subheader("收益分析")
+        latest_monthly = monthly_analysis.tail(6).copy()
+        latest_monthly["date"] = latest_monthly["date"].dt.strftime("%Y-%m-%d")
+        latest_monthly["delta_amount"] = latest_monthly["delta_amount"].apply(
+            lambda x: format_money(float(x)) if pd.notna(x) else "-"
+        )
+        latest_monthly["delta_pct"] = latest_monthly["delta_pct"].apply(
+            lambda x: f"{float(x):.2%}" if pd.notna(x) else "-"
+        )
+        st.dataframe(
+            latest_monthly[["date", "delta_amount", "delta_pct"]],
+            use_container_width=True,
+            hide_index=True,
+            height=260,
+        )
+
+    with analysis_right:
+        st.subheader("分类贡献")
+        contribution_rows = [
+            (str(item["category"]), format_money(float(item["delta_amount"])))
+            for _, item in contribution.head(5).iterrows()
+        ]
+        render_summary_list(contribution_rows or [("暂无数据", "-")])
+
     with st.expander("月度更新入口", expanded=False):
         update_left, update_right = st.columns([1.1, 1.4])
 
@@ -874,6 +1003,15 @@ def main() -> None:
             else:
                 update_frame = build_update_frame(workbook_file, target_column)
                 editor_df = update_frame[["row_index", "分类", "账户", "上月金额", "本月金额"]].copy()
+
+            anomaly_messages = build_anomaly_messages(update_frame, monthly_analysis)
+            for message in anomaly_messages:
+                st.warning(message)
+
+            if st.button("用上月金额填充空白项", use_container_width=True):
+                fill_mask = editor_df["本月金额"].isna()
+                editor_df.loc[fill_mask, "本月金额"] = editor_df.loc[fill_mask, "上月金额"]
+
             edited_df = st.data_editor(
                 editor_df,
                 use_container_width=True,
@@ -897,6 +1035,15 @@ def main() -> None:
             if st.button(save_label, type="primary", use_container_width=True):
                 if use_database:
                     upsert_snapshot_values(create_supabase(), edited_df, selected_month.snapshot_date)
+                    insert_audit_log(
+                        create_supabase(),
+                        "save_month_values",
+                        selected_month.snapshot_date,
+                        {
+                            "mode": update_mode,
+                            "filled_rows": int(edited_df["本月金额"].notna().sum()),
+                        },
+                    )
                 else:
                     save_month_values(workbook_file, target_column, edited_df)
                 load_data.clear()
@@ -907,6 +1054,26 @@ def main() -> None:
                     target_name = "数据库" if use_database else "Excel"
                     st.success(f"{selected_label} 已保存到{target_name}。")
                 st.rerun()
+
+    if use_database:
+        st.subheader("最近操作")
+        audit_logs = fetch_recent_audit_logs(create_supabase(), limit=10)
+        if audit_logs.empty:
+            st.caption("暂时还没有审计记录，执行过月度保存后会显示。")
+        else:
+            audit_view = audit_logs.copy()
+            if "snapshot_date" in audit_view.columns:
+                audit_view["snapshot_date"] = audit_view["snapshot_date"].fillna("")
+            if "details" in audit_view.columns:
+                audit_view["details"] = audit_view["details"].apply(
+                    lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (dict, list)) else str(x)
+                )
+            st.dataframe(
+                audit_view[["created_at", "action", "snapshot_date", "details"]],
+                use_container_width=True,
+                hide_index=True,
+                height=260,
+            )
 
     st.subheader("账户最新快照")
     snapshot = data.latest_snapshot.copy()

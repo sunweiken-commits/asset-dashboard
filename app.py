@@ -407,6 +407,10 @@ def inject_responsive_styles() -> None:
             white-space: nowrap;
         }
 
+        div[data-testid="stExpander"] {
+            margin-top: 2rem !important;
+        }
+
         .asset-kpi-label {
             font-size: 0.86rem;
             color: #667085;
@@ -571,7 +575,7 @@ def inject_responsive_styles() -> None:
             }
 
             div[data-testid="stExpander"] {
-                margin-top: 1rem !important;
+                margin-top: 1.25rem !important;
             }
         }
         </style>

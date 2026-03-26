@@ -350,68 +350,276 @@ def inject_responsive_styles() -> None:
         .block-container {
             padding-top: 1.5rem;
             padding-bottom: 2rem;
+            max-width: 1240px;
+        }
+
+        .asset-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.9rem;
+            margin: 0.5rem 0 1rem 0;
+        }
+
+        .asset-kpi-card {
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 18px;
+            padding: 0.9rem 1rem 0.85rem;
+            background: linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 1));
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+        }
+
+        .asset-section-caption {
+            color: #667085;
+            font-size: 0.88rem;
+            margin: 0 0 0.4rem 0;
+        }
+
+        .asset-summary-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.55rem;
+        }
+
+        .asset-summary-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.9rem;
+            padding: 0.72rem 0.85rem;
+            border-radius: 14px;
+            background: #ffffff;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
+        }
+
+        .asset-summary-name {
+            font-size: 0.88rem;
+            color: #475467;
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
+        .asset-summary-value {
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: #111827;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .asset-mobile-only {
+            display: none;
+        }
+
+        .asset-desktop-only {
+            display: block;
+        }
+
+        .asset-kpi-label {
+            font-size: 0.86rem;
+            color: #667085;
+            margin-bottom: 0.45rem;
+        }
+
+        .asset-kpi-value {
+            font-size: 1.55rem;
+            line-height: 1.15;
+            font-weight: 700;
+            color: #111827;
+            letter-spacing: -0.02em;
+        }
+
+        .asset-kpi-delta {
+            margin-top: 0.5rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            border-radius: 999px;
+            padding: 0.22rem 0.6rem;
+            font-size: 0.84rem;
+            font-weight: 600;
+            color: #15803d;
+            background: #e8f8ee;
         }
 
         @media (max-width: 768px) {
             .block-container {
-                padding-top: 0.75rem;
-                padding-left: 0.8rem;
-                padding-right: 0.8rem;
-                padding-bottom: 1rem;
+                padding-top: 0.55rem;
+                padding-left: 0.7rem;
+                padding-right: 0.7rem;
+                padding-bottom: 0.8rem;
+                max-width: 100%;
             }
 
             h1 {
-                font-size: 2rem !important;
+                font-size: 1.45rem !important;
                 line-height: 1.2 !important;
+                margin-bottom: 0.35rem !important;
             }
 
             h3 {
-                font-size: 1.15rem !important;
+                font-size: 1.02rem !important;
+                margin-top: 0.4rem !important;
+                margin-bottom: 0.35rem !important;
             }
 
-            div[data-testid="stMetric"] {
-                padding: 0.35rem 0;
+            p, label, div {
+                -webkit-font-smoothing: antialiased;
             }
 
-            div[data-testid="stMetricLabel"] p {
-                font-size: 0.88rem !important;
+            .asset-kpi-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 0.55rem;
+                margin: 0.35rem 0 0.8rem 0;
             }
 
-            div[data-testid="stMetricValue"] {
-                font-size: 1.7rem !important;
+            .asset-kpi-card {
+                border-radius: 14px;
+                padding: 0.72rem 0.78rem 0.7rem;
+                box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
             }
 
-            div[data-testid="stMetricDelta"] {
-                font-size: 0.9rem !important;
+            .asset-kpi-label {
+                font-size: 0.76rem;
+                margin-bottom: 0.3rem;
             }
 
-            div[data-testid="stHorizontalBlock"] {
-                gap: 0.75rem !important;
-                flex-wrap: wrap !important;
+            .asset-kpi-value {
+                font-size: 1.08rem;
+                line-height: 1.18;
             }
 
-            div[data-testid="column"] {
-                width: 100% !important;
-                flex: 1 1 100% !important;
+            .asset-kpi-delta {
+                font-size: 0.74rem;
+                margin-top: 0.35rem;
+                padding: 0.16rem 0.48rem;
+            }
+
+            .asset-section-caption {
+                font-size: 0.78rem;
+                margin-bottom: 0.25rem;
+            }
+
+            .asset-summary-list {
+                gap: 0.4rem;
+            }
+
+            .asset-summary-row {
+                border-radius: 12px;
+                padding: 0.58rem 0.68rem;
+                gap: 0.55rem;
+            }
+
+            .asset-summary-name {
+                font-size: 0.8rem;
+            }
+
+            .asset-summary-value {
+                font-size: 0.82rem;
+            }
+
+            .asset-mobile-only {
+                display: block;
+            }
+
+            .asset-desktop-only {
+                display: none;
             }
 
             div[data-testid="stDataFrame"] {
-                font-size: 0.88rem !important;
+                font-size: 0.82rem !important;
+            }
+
+            div[data-testid="stMarkdownContainer"] p {
+                font-size: 0.88rem;
+                line-height: 1.38;
+            }
+
+            div[data-testid="stCaptionContainer"] {
+                font-size: 0.78rem !important;
+            }
+
+            div[data-testid="stHorizontalBlock"] {
+                gap: 0.5rem !important;
+            }
+
+            div[data-testid="column"] {
+                min-width: 0 !important;
+            }
+
+            div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stMetric"]) {
+                gap: 0.4rem !important;
             }
 
             div[data-baseweb="select"] > div {
                 min-height: 44px;
+                font-size: 0.92rem;
             }
 
             button[kind],
             div[data-testid="stButton"] button {
                 min-height: 44px;
+                border-radius: 12px !important;
+                font-size: 0.92rem !important;
+            }
+
+            div[data-testid="stExpander"] details {
+                border-radius: 14px !important;
+            }
+
+            div[data-testid="stDataFrame"] [role="table"] {
+                font-size: 0.8rem !important;
+            }
+
+            div[role="radiogroup"] {
+                gap: 0.3rem !important;
+                flex-wrap: wrap !important;
+            }
+
+            div[role="radiogroup"] label {
+                min-height: 36px !important;
+                padding: 0.05rem 0.15rem !important;
+            }
+
+            iframe {
+                border-radius: 14px !important;
             }
         }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_kpi_grid(items: list[dict[str, str]]) -> None:
+    chunks: list[str] = ['<div class="asset-kpi-grid">']
+    for item in items:
+        chunks.extend(
+            [
+                '<div class="asset-kpi-card">',
+                f'<div class="asset-kpi-label">{item["label"]}</div>',
+                f'<div class="asset-kpi-value">{item["value"]}</div>',
+                f'<div class="asset-kpi-delta">{item["delta"]}</div>',
+                "</div>",
+            ]
+        )
+    chunks.append("</div>")
+    st.markdown("".join(chunks), unsafe_allow_html=True)
+
+
+def render_summary_list(rows: list[tuple[str, str]]) -> None:
+    chunks: list[str] = ['<div class="asset-summary-list">']
+    for name, value in rows:
+        chunks.extend(
+            [
+                '<div class="asset-summary-row">',
+                f'<div class="asset-summary-name">{name}</div>',
+                f'<div class="asset-summary-value">{value}</div>',
+                "</div>",
+            ]
+        )
+    chunks.append("</div>")
+    st.markdown("".join(chunks), unsafe_allow_html=True)
 
 
 def main() -> None:
@@ -473,11 +681,30 @@ def main() -> None:
     )
     largest_account = data.latest_snapshot.sort_values("amount", ascending=False).iloc[0]
 
-    kpi_1, kpi_2, kpi_3, kpi_4 = st.columns(4)
-    kpi_1.metric("最新总资产", format_money(latest_total), format_money(delta_amount))
-    kpi_2.metric("环比变化", f"{delta_pct:.2%}" if delta_pct is not None else "-", f"截至 {latest_date}")
-    kpi_3.metric("跟踪账户数", f"{data.latest_snapshot['account'].nunique()}")
-    kpi_4.metric("最大单项资产", largest_account["account"], format_money(float(largest_account["amount"])))
+    render_kpi_grid(
+        [
+            {
+                "label": "最新总资产",
+                "value": format_money(latest_total),
+                "delta": f"↑ {format_money(delta_amount)}",
+            },
+            {
+                "label": "环比变化",
+                "value": f"{delta_pct:.2%}" if delta_pct is not None else "-",
+                "delta": f"截至 {latest_date}",
+            },
+            {
+                "label": "跟踪账户数",
+                "value": str(data.latest_snapshot["account"].nunique()),
+                "delta": "已接入云端数据库" if use_database else "当前为本地模式",
+            },
+            {
+                "label": "最大单项资产",
+                "value": str(largest_account["account"]),
+                "delta": f"↑ {format_money(float(largest_account['amount']))}",
+            },
+        ]
+    )
 
     chart_left, chart_right = st.columns([1.4, 1])
 
@@ -537,13 +764,14 @@ def main() -> None:
                 text="label:N",
             )
         ).properties(height=320)
-        st.caption(f"当前展示：{title_name}")
+        st.markdown(f'<div class="asset-section-caption">当前展示：{title_name}</div>', unsafe_allow_html=True)
         st.altair_chart(trend_chart, use_container_width=True)
 
     with chart_right:
         st.subheader("最新资产分类占比")
+        category_summary_view = category_summary.copy()
         category_chart = (
-            alt.Chart(category_summary)
+            alt.Chart(category_summary_view)
             .mark_bar()
             .encode(
                 x=alt.X("category:N", title=None, axis=alt.Axis(labelAngle=0)),
@@ -555,32 +783,46 @@ def main() -> None:
             )
             .properties(height=320)
         )
+        st.markdown('<div class="asset-desktop-only">', unsafe_allow_html=True)
         st.altair_chart(category_chart, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        mobile_category_chart = (
+            alt.Chart(category_summary_view)
+            .mark_bar(cornerRadiusEnd=6)
+            .encode(
+                y=alt.Y("category:N", title=None, sort="-x"),
+                x=alt.X("amount:Q", title=None),
+                tooltip=[
+                    alt.Tooltip("category:N", title="分类"),
+                    alt.Tooltip("amount:Q", title="金额", format=",.2f"),
+                ],
+            )
+            .properties(height=260)
+        )
+        st.markdown('<div class="asset-mobile-only">', unsafe_allow_html=True)
+        st.altair_chart(mobile_category_chart, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     summary_left, summary_right = st.columns([1.4, 1])
 
     with summary_left:
-        st.caption("趋势摘要")
-        st.dataframe(
-            trend_view.assign(
-                date=lambda df: df["date"].dt.strftime("%Y-%m-%d"),
-                amount=lambda df: df["amount"].map(format_money),
-            )[["date", "amount"]].tail(8),
-            use_container_width=True,
-            hide_index=True,
-            height=320,
-        )
+        st.markdown('<div class="asset-section-caption">趋势摘要</div>', unsafe_allow_html=True)
+        trend_summary_rows = [
+            (item["date"].strftime("%Y-%m-%d"), format_money(float(item["amount"])))
+            for _, item in trend_view.tail(6).iterrows()
+        ]
+        render_summary_list(trend_summary_rows)
 
     with summary_right:
-        st.caption("分类摘要")
-        st.dataframe(
-            category_summary.assign(amount=lambda df: df["amount"].map(format_money)),
-            use_container_width=True,
-            hide_index=True,
-            height=320,
-        )
+        st.markdown('<div class="asset-section-caption">分类摘要</div>', unsafe_allow_html=True)
+        category_summary_rows = [
+            (str(item["category"]), format_money(float(item["amount"])))
+            for _, item in category_summary.head(5).iterrows()
+        ]
+        render_summary_list(category_summary_rows)
 
-    with st.expander("月度更新入口", expanded=True):
+    with st.expander("月度更新入口", expanded=False):
         update_left, update_right = st.columns([1.1, 1.4])
 
         with update_left:

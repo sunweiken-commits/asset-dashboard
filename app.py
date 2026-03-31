@@ -341,6 +341,53 @@ def format_money_compact(value: float) -> str:
     return format_money(value)
 
 
+def format_audit_action(action: object) -> str:
+    action_map = {
+        "save_month_values": "保存月度数据",
+    }
+    if action is None or (isinstance(action, float) and pd.isna(action)):
+        return ""
+    return action_map.get(str(action), str(action))
+
+
+def format_audit_created_at(value: object) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(parsed):
+        return str(value)
+    return parsed.tz_convert("Asia/Shanghai").strftime("%Y-%m-%d %H:%M")
+
+
+def format_audit_details(value: object) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+
+    details = value
+    if isinstance(value, str):
+        try:
+            details = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+
+    if isinstance(details, dict):
+        mode = details.get("mode")
+        filled_rows = details.get("filled_rows")
+        parts: list[str] = []
+        if mode:
+            parts.append(str(mode))
+        if filled_rows is not None:
+            parts.append(f"填写 {filled_rows} 项")
+        if parts:
+            return "，".join(parts)
+        return json.dumps(details, ensure_ascii=False)
+
+    if isinstance(details, list):
+        return "；".join(str(item) for item in details)
+
+    return str(details)
+
+
 def safe_pct_change(values: Iterable[float]) -> float | None:
     values = list(values)
     if len(values) < 2 or values[-2] == 0:
@@ -1064,12 +1111,22 @@ def main() -> None:
             audit_view = audit_logs.copy()
             if "snapshot_date" in audit_view.columns:
                 audit_view["snapshot_date"] = audit_view["snapshot_date"].fillna("")
+            if "created_at" in audit_view.columns:
+                audit_view["created_at"] = audit_view["created_at"].apply(format_audit_created_at)
+            if "action" in audit_view.columns:
+                audit_view["action"] = audit_view["action"].apply(format_audit_action)
             if "details" in audit_view.columns:
-                audit_view["details"] = audit_view["details"].apply(
-                    lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (dict, list)) else str(x)
-                )
+                audit_view["details"] = audit_view["details"].apply(format_audit_details)
+            audit_view = audit_view.rename(
+                columns={
+                    "created_at": "操作时间",
+                    "action": "操作类型",
+                    "snapshot_date": "对应月份",
+                    "details": "说明",
+                }
+            )
             st.dataframe(
-                audit_view[["created_at", "action", "snapshot_date", "details"]],
+                audit_view[["操作时间", "操作类型", "对应月份", "说明"]],
                 use_container_width=True,
                 hide_index=True,
                 height=260,

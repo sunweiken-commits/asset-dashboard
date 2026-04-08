@@ -48,6 +48,7 @@ class WorkbookData:
     asset_history: pd.DataFrame
     latest_snapshot: pd.DataFrame
     total_trend: pd.DataFrame
+    demo_mode: bool = False
 
 
 @dataclass
@@ -307,6 +308,58 @@ def build_total_trend(asset_history: pd.DataFrame) -> pd.DataFrame:
     return trend
 
 
+def build_demo_workbook_data() -> WorkbookData:
+    demo_rows = [
+        ("现金", "招行活期", "2025-10-31", 120000),
+        ("现金", "招行活期", "2025-11-30", 122000),
+        ("现金", "招行活期", "2025-12-31", 125000),
+        ("现金", "招行活期", "2026-01-31", 128000),
+        ("现金", "招行活期", "2026-02-28", 126000),
+        ("现金", "招行活期", "2026-03-31", 130000),
+        ("基金", "指数基金A", "2025-10-31", 180000),
+        ("基金", "指数基金A", "2025-11-30", 186000),
+        ("基金", "指数基金A", "2025-12-31", 191000),
+        ("基金", "指数基金A", "2026-01-31", 194000),
+        ("基金", "指数基金A", "2026-02-28", 201000),
+        ("基金", "指数基金A", "2026-03-31", 208000),
+        ("基金", "黄金ETF", "2025-10-31", 50000),
+        ("基金", "黄金ETF", "2025-11-30", 52000),
+        ("基金", "黄金ETF", "2025-12-31", 51500),
+        ("基金", "黄金ETF", "2026-01-31", 54000),
+        ("基金", "黄金ETF", "2026-02-28", 56000),
+        ("基金", "黄金ETF", "2026-03-31", 57500),
+        ("股票", "美股账户", "2025-10-31", 260000),
+        ("股票", "美股账户", "2025-11-30", 268000),
+        ("股票", "美股账户", "2025-12-31", 275000),
+        ("股票", "美股账户", "2026-01-31", 271000),
+        ("股票", "美股账户", "2026-02-28", 282000),
+        ("股票", "美股账户", "2026-03-31", 296000),
+        ("保险", "养老保险账户", "2025-10-31", 90000),
+        ("保险", "养老保险账户", "2025-11-30", 90500),
+        ("保险", "养老保险账户", "2025-12-31", 91000),
+        ("保险", "养老保险账户", "2026-01-31", 91800),
+        ("保险", "养老保险账户", "2026-02-28", 92500),
+        ("保险", "养老保险账户", "2026-03-31", 93200),
+    ]
+    asset_history = pd.DataFrame(demo_rows, columns=["category", "account", "date", "amount"])
+    asset_history["date"] = pd.to_datetime(asset_history["date"])
+    asset_history = asset_history.sort_values(["date", "category", "account"]).reset_index(drop=True)
+    latest_snapshot = (
+        asset_history.sort_values("date")
+        .groupby(["category", "account"], as_index=False)
+        .tail(1)
+        .sort_values(["category", "amount"], ascending=[True, False])
+        .reset_index(drop=True)
+    )
+    total_trend = build_total_trend(asset_history)
+    return WorkbookData(
+        asset_history=asset_history,
+        latest_snapshot=latest_snapshot,
+        total_trend=total_trend,
+        demo_mode=True,
+    )
+
+
 @st.cache_data(show_spinner=False)
 def load_data(path_str: str) -> WorkbookData:
     if is_supabase_configured():
@@ -320,7 +373,7 @@ def load_data(path_str: str) -> WorkbookData:
 
     path = Path(path_str).expanduser()
     if not path.exists():
-        raise FileNotFoundError(f"找不到文件: {path}")
+        return build_demo_workbook_data()
 
     asset_history, latest_snapshot = parse_assets_sheet(path)
     total_trend = build_total_trend(asset_history)
@@ -746,9 +799,7 @@ def main() -> None:
     st.set_page_config(page_title="个人资产看板", page_icon="💹", layout="wide")
     inject_responsive_styles()
     require_login()
-    st.title("个人资产看板")
-    backend_mode = "数据库" if is_supabase_configured() else "Excel"
-    st.caption(f"当前数据源：{backend_mode}。自动汇总总资产趋势、分类占比和账户快照。")
+    prelim_demo_mode = not is_supabase_configured() and not DEFAULT_WORKBOOK.exists()
 
     with st.sidebar:
         st.header("数据源")
@@ -760,15 +811,39 @@ def main() -> None:
         else:
             workbook_path = st.text_input("Excel 路径", value=str(DEFAULT_WORKBOOK))
             refresh_now = st.button("重新读取 Excel", use_container_width=True)
-            st.caption("点一次“重新读取 Excel”就会重新加载第一张工作表。")
+            if prelim_demo_mode:
+                st.warning("当前未检测到本地 Excel 文件，已自动切换到演示数据模式。")
+                st.caption("部署到云端后，如果还没接 Supabase，也会先展示这份演示数据。")
+            else:
+                st.caption("点一次“重新读取 Excel”就会重新加载第一张工作表。")
 
     if refresh_now:
         load_data.clear()
 
     data = load_data(workbook_path)
     use_database = is_supabase_configured()
+    demo_mode = data.demo_mode
+    if use_database:
+        backend_mode = "数据库"
+    elif demo_mode:
+        backend_mode = "演示"
+    else:
+        backend_mode = "Excel"
+
+    st.title("个人资产看板")
+    st.caption(f"当前数据源：{backend_mode}。自动汇总总资产趋势、分类占比和账户快照。")
+
     if use_database:
         month_columns = list_snapshot_months(create_supabase())
+    elif demo_mode:
+        month_columns = [
+            SnapshotMonth(
+                label=item.strftime("%Y-%m-%d"),
+                snapshot_date=item,
+                has_values=True,
+            )
+            for item in data.total_trend["date"].dt.date.tolist()
+        ]
     else:
         workbook_file = Path(workbook_path).expanduser()
         wb_headers = load_workbook(workbook_file, data_only=True)
@@ -786,6 +861,8 @@ def main() -> None:
                 )
             )
         display_months = sorted(display_months, key=lambda item: item.snapshot_date)
+    elif demo_mode:
+        display_months = month_columns
     else:
         display_months = month_columns
     default_update_label = next(
@@ -973,6 +1050,10 @@ def main() -> None:
         render_summary_list(contribution_rows or [("暂无数据", "-")])
 
     with st.expander("月度更新入口", expanded=False):
+        if demo_mode:
+            st.info("当前是演示模式：可以查看图表和导出数据，但不会写入 Excel 或数据库。")
+            st.caption("如果要开启真实月度录入，请在云端配置 Supabase，或在本机提供可访问的 Excel 文件。")
+            return
         update_left, update_right = st.columns([1.1, 1.4])
 
         with update_left:

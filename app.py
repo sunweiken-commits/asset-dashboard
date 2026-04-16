@@ -49,6 +49,7 @@ class WorkbookData:
     latest_snapshot: pd.DataFrame
     total_trend: pd.DataFrame
     demo_mode: bool = False
+    load_warning: str | None = None
 
 
 @dataclass
@@ -308,7 +309,7 @@ def build_total_trend(asset_history: pd.DataFrame) -> pd.DataFrame:
     return trend
 
 
-def build_demo_workbook_data() -> WorkbookData:
+def build_demo_workbook_data(load_warning: str | None = None) -> WorkbookData:
     demo_rows = [
         ("现金", "招行活期", "2025-10-31", 120000),
         ("现金", "招行活期", "2025-11-30", 122000),
@@ -357,19 +358,25 @@ def build_demo_workbook_data() -> WorkbookData:
         latest_snapshot=latest_snapshot,
         total_trend=total_trend,
         demo_mode=True,
+        load_warning=load_warning,
     )
 
 
 @st.cache_data(show_spinner=False)
 def load_data(path_str: str) -> WorkbookData:
     if is_supabase_configured():
-        client = create_supabase()
-        asset_history, latest_snapshot, total_trend = build_workbook_data_from_database(client)
-        return WorkbookData(
-            asset_history=asset_history,
-            latest_snapshot=latest_snapshot,
-            total_trend=total_trend,
-        )
+        try:
+            client = create_supabase()
+            asset_history, latest_snapshot, total_trend = build_workbook_data_from_database(client)
+            return WorkbookData(
+                asset_history=asset_history,
+                latest_snapshot=latest_snapshot,
+                total_trend=total_trend,
+            )
+        except Exception:
+            return build_demo_workbook_data(
+                load_warning="当前无法连接云端数据库，已自动切换到演示模式。请检查 Supabase 服务状态或 Streamlit Secrets 配置后再刷新。"
+            )
 
     path = Path(path_str).expanduser()
     if not path.exists():
@@ -821,7 +828,7 @@ def main() -> None:
         load_data.clear()
 
     data = load_data(workbook_path)
-    use_database = is_supabase_configured()
+    use_database = is_supabase_configured() and not data.demo_mode and not data.load_warning
     demo_mode = data.demo_mode
     if use_database:
         backend_mode = "数据库"
@@ -832,6 +839,8 @@ def main() -> None:
 
     st.title("个人资产看板")
     st.caption(f"当前数据源：{backend_mode}。自动汇总总资产趋势、分类占比和账户快照。")
+    if data.load_warning:
+        st.warning(data.load_warning)
 
     if use_database:
         month_columns = list_snapshot_months(create_supabase())
